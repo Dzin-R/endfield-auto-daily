@@ -36,21 +36,16 @@ function log(type, ...data) {
   messages.push({ type, string })
 }
 
-/**
- * Exchange ACCOUNT_TOKEN -> cred + salt via OAuth flow (3 steps)
- */
 async function performOAuthFlow(accountToken) {
-  if (!accountToken) throw new Error('No account token supplied for OAuth flow')
+  if (!accountToken) throw new Error('Токен аккаунта не указан')
 
-  // Step 1: basic info (validate token)
   const infoUrl = `${BASIC_INFO_URL}?token=${encodeURIComponent(accountToken)}`
   const infoRes = await fetch(infoUrl, { method: 'GET', headers: { 'Accept': 'application/json' } })
   const infoData = await infoRes.json()
   if (infoData.status !== 0) {
-    throw new Error(`OAuth Step 1 Failed: ${infoData.msg || JSON.stringify(infoData)}`)
+    throw new Error(`Ошибка авторизации: ${infoData.msg || JSON.stringify(infoData)}`)
   }
 
-  // Step 2: grant OAuth code
   const grantRes = await fetch(OAUTH_GRANT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -58,10 +53,9 @@ async function performOAuthFlow(accountToken) {
   })
   const grantData = await grantRes.json()
   if (grantData.status !== 0 || !grantData.data?.code) {
-    throw new Error(`OAuth Step 2 Failed: ${grantData.msg || JSON.stringify(grantData)}`)
+    throw new Error(`Ошибка получения кода: ${grantData.msg || JSON.stringify(grantData)}`)
   }
 
-  // Step 3: exchange code for cred (+ token)
   const credRes = await fetch(GENERATE_CRED_URL, {
     method: 'POST',
     headers: {
@@ -75,7 +69,7 @@ async function performOAuthFlow(accountToken) {
   })
   const credData = await credRes.json()
   if (credData.code !== 0 || !credData.data?.cred) {
-    throw new Error(`OAuth Step 3 Failed: ${credData.message || JSON.stringify(credData)}`)
+    throw new Error(`Ошибка получения токена: ${credData.message || JSON.stringify(credData)}`)
   }
 
   return {
@@ -85,9 +79,6 @@ async function performOAuthFlow(accountToken) {
   }
 }
 
-/**
- * Build headers for SKPort API (uses provided timestamp to match sign)
- */
 function buildHeaders(cred, gameRole = null, timestamp = null) {
   const ts = timestamp || Math.floor(Date.now() / 1000).toString()
   const headers = {
@@ -106,9 +97,6 @@ function buildHeaders(cred, gameRole = null, timestamp = null) {
   return headers
 }
 
-/**
- * Compute V2 sign: MD5( HMAC-SHA256( path + timestamp + headers_json, salt ) )
- */
 function computeSignV2(path, timestamp, salt) {
   if (!salt) return null
   const headerJson = JSON.stringify({ platform: PLATFORM, timestamp, dId: "", vName: VNAME })
@@ -117,24 +105,21 @@ function computeSignV2(path, timestamp, salt) {
   return crypto.createHash('md5').update(hmac).digest('hex')
 }
 
-/**
- * Get all player roles via binding endpoint (signed with salt)
- */
 async function getPlayerRoles(cred, salt) {
   const path = '/api/v1/game/player/binding'
   const timestamp = Math.floor(Date.now() / 1000).toString()
   const headers = buildHeaders(cred, null, timestamp)
 
   const sign = computeSignV2(path, timestamp, salt)
-  if (!sign) throw new Error('Missing salt for V2 signing (binding required)')
+  if (!sign) throw new Error('Отсутствует salt для подписи')
   headers['sign'] = sign
 
   const res = await fetch(BINDING_URL, { method: 'GET', headers })
   const json = await res.json()
-  if (json.code !== 0) throw new Error(json.message || `Binding API error: ${json.code}`)
+  if (json.code !== 0) throw new Error(json.message || `Ошибка API: ${json.code}`)
 
   const endfieldApp = json.data?.list?.find(app => app.appCode === 'endfield')
-  if (!endfieldApp || !endfieldApp.bindingList?.length) throw new Error('No Endfield account binding found')
+  if (!endfieldApp || !endfieldApp.bindingList?.length) throw new Error('Аккаунт Endfield не найден')
 
   const allRoles = []
   for (const binding of endfieldApp.bindingList) {
@@ -150,14 +135,14 @@ async function getPlayerRoles(cred, salt) {
       })
     }
   }
-  if (!allRoles.length) throw new Error('No roles found in binding')
+  if (!allRoles.length) throw new Error('Персонажи не найдены')
   return allRoles
 }
 
 async function checkAttendance(headers) {
   const res = await fetch(ATTENDANCE_URL, { method: 'GET', headers })
   const json = await res.json()
-  if (json.code !== 0) throw new Error(json.message || `Attendance status check failed: ${json.code}`)
+  if (json.code !== 0) throw new Error(json.message || `Ошибка проверки чек-ина: ${json.code}`)
   return {
     hasToday: json.data?.hasToday ?? false,
     totalSignIns: json.data?.records?.length ?? 0
@@ -167,7 +152,7 @@ async function checkAttendance(headers) {
 async function claimAttendance(headers) {
   const res = await fetch(ATTENDANCE_URL, { method: 'POST', headers, body: null })
   const json = await res.json()
-  if (json.code !== 0) throw new Error(json.message || `Claim failed: ${json.code}`)
+  if (json.code !== 0) throw new Error(json.message || `Ошибка получения награды: ${json.code}`)
   const rewards = []
   const awardIds = json.data?.awardIds ?? []
   const resourceMap = json.data?.resourceInfoMap ?? {}
@@ -178,16 +163,13 @@ async function claimAttendance(headers) {
   return { rewards }
 }
 
-/**
- * Check-in for a single role (uses cred + salt to sign)
- */
 async function checkInRole(cred, role, salt) {
   const path = '/web/v1/game/endfield/attendance'
   const timestamp = Math.floor(Date.now() / 1000).toString()
   const headers = buildHeaders(cred, role.gameRole, timestamp)
 
   const sign = computeSignV2(path, timestamp, salt)
-  if (!sign) throw new Error('Missing salt for V2 signing (attendance requires sign)')
+  if (!sign) throw new Error('Отсутствует salt для подписи')
   headers['sign'] = sign
 
   const status = await checkAttendance(headers)
@@ -196,65 +178,58 @@ async function checkInRole(cred, role, salt) {
   return { success: true, alreadyClaimed: false, rewards: result.rewards }
 }
 
-/**
- * Process one ACCOUNT_TOKEN: get cred+salt, fetch roles, check-in all roles
- */
 async function runAccount(accountToken, accountIndex) {
-  log('debug', `\n----- CHECKING IN FOR ACCOUNT ${accountIndex} -----`)
+  log('debug', `\n----- АККАУНТ ${accountIndex} -----`)
   try {
     const oauth = await performOAuthFlow(accountToken)
     const { cred, salt } = oauth
-    log('info', `Account ${accountIndex}: obtained cred and salt`)
+    log('debug', `Аккаунт ${accountIndex}: токен получен`)
 
     const roles = await getPlayerRoles(cred, salt)
-    log('info', `Account ${accountIndex}: Found ${roles.length} role(s)`)
+    log('debug', `Аккаунт ${accountIndex}: найдено персонажей ${roles.length}`)
 
     for (const role of roles) {
-      const roleLabel = `${role.nickname} (Lv.${role.level}) [${role.server}]`
+      const roleLabel = `${role.nickname} (Ур.${role.level}) [${role.server}]`
       try {
         const result = await checkInRole(cred, role, salt)
         if (result.alreadyClaimed) {
-          log('info', `  → ${roleLabel}: Already checked in today`)
+          log('info', `Endfield: Уже отмечен сегодня`)
         } else if (result.rewards?.length > 0) {
-          log('info', `  → ${roleLabel}: Checked in! Rewards: ${result.rewards.join(', ')}`)
+          log('info', `Endfield: Отмечен! Награды: ${result.rewards.join(', ')}`)
         } else {
-          log('info', `  → ${roleLabel}: Successfully checked in!`)
+          log('info', `Endfield: Успешно отмечен!`)
         }
       } catch (err) {
-        log('error', `  → ${roleLabel}:`, err.message)
+        log('error', `${roleLabel}:`, err.message)
       }
       await sleep(500)
     }
   } catch (err) {
-    log('error', `Account ${accountIndex}:`, err.message)
+    log('error', `Аккаунт ${accountIndex}:`, err.message)
   }
 }
 
-/**
- * Send Discord notification (optional)
- */
 async function discordWebhookSend() {
   log('debug', '\n----- DISCORD WEBHOOK -----')
   if (!discordWebhook || !discordWebhook.toLowerCase().trim().startsWith('https://discord.com/api/webhooks/')) {
-    log('debug', 'No valid DISCORD_WEBHOOK configured, skipping webhook send')
+    log('debug', 'DISCORD_WEBHOOK не настроен, пропускаем')
     return
   }
   let discordMsg = ''
   if (discordUser) discordMsg = `<@${discordUser}>\n`
-  discordMsg += '**Endfield Daily Check-in**\n'
-  discordMsg += messages.map(msg => `(${msg.type.toUpperCase()}) ${msg.string}`).join('\n')
+  discordMsg += messages.map(msg => `${msg.string}`).join('\n')
   const res = await fetch(discordWebhook, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content: discordMsg })
   })
-  if (res.status === 204) { log('info', 'Successfully sent message to Discord webhook!'); return }
-  log('error', 'Error sending message to Discord webhook')
+  if (res.status === 204) { log('debug', 'Сообщение отправлено в Discord'); return }
+  log('error', 'Ошибка отправки в Discord')
 }
 
 // Main
 if (!accountTokens || accountTokens.length === 0) {
-  throw new Error('ACCOUNT_TOKEN environment variable is required (one or more tokens separated by newlines)')
+  throw new Error('Переменная ACCOUNT_TOKEN не задана')
 }
 
 for (let i = 0; i < accountTokens.length; i++) {
@@ -268,5 +243,5 @@ if (discordWebhook) {
 
 if (hasErrors) {
   console.log('')
-  throw new Error('One or more errors occurred.')
+  throw new Error('Произошли ошибки.')
 }
