@@ -2,7 +2,7 @@ name: Daily check in
 
 on:
   schedule:
-    - cron: "05 14 * * *" # 17:05 МСК (14:05 UTC)
+    - cron: "0 22 * * *" # scheduled at 06:00 (UTC+8) everyday
   workflow_dispatch:
 
 jobs:
